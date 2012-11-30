@@ -8,12 +8,155 @@
   /*global jQuery:false _:false window:false VIE:false */
   'use strict';
 
+  var defaults = {
+    collections: [],
+    model: null,
+    vie: null,
+    domService: null,
+    propertyEditors: {},
+    // the configuration (mapping and options) of property editor widgets
+    propertyEditorWidgetsConfiguration: {},
+    // the available property editor widgets by data type
+    propertyEditorWidgets: {},
+    predicateSelector: null,
+    disabled: false,
+    // Current state of the Editable
+    state: null,
+    // Callback function for validating changes between states. Receives the previous state, new state, possibly property, and a callback
+    acceptStateChange: true,
+    // Callback function for listening (and reacting) to state changes.
+    stateChange: null
+  };
+
+  var api = function (options) {
+    return {
+      options: jQuery.extend(defaults, options),
+      _init: function () {
+        // Backwards compatibility:
+        // - this.options.propertyEditorWidgets used to be this.options.widgets
+        // - this.options.propertyEditorWidgetsConfiguration used to be
+        //   this.options.editors
+        if (this.options.widgets) {
+          this.options.propertyEditorWidgets = _.extend(this.options.propertyEditorWidgets, this.options.widgets);
+        }
+        if (this.options.editors) {
+          this.options.propertyEditorWidgetsConfiguration = _.extend(this.options.propertyEditorWidgetsConfiguration, this.options.editors);
+        }
+
+        // Old way of setting the widget inactive
+        if (this.options.disabled === true) {
+          this.setState('inactive');
+          return;
+        }
+
+        if (this.options.disabled === false && this.options.state === 'inactive') {
+          this.setState('candidate');
+          return;
+        }
+        this.options.disabled = false;
+
+        if (this.options.state) {
+          this.setState(this.options.state);
+          return;
+        }
+        this.setState('candidate');
+      },
+      _create: function () {
+        // Backwards compatibility:
+        // - this.options.propertyEditorWidgets used to be this.options.widgets
+        // - this.options.propertyEditorWidgetsConfiguration used to be
+        //   this.options.editors
+        if (this.options.widgets) {
+          this.options.propertyEditorWidgets = _.extend(this.options.propertyEditorWidgets, this.options.widgets);
+        }
+        if (this.options.editors) {
+          this.options.propertyEditorWidgetsConfiguration = _.extend(this.options.propertyEditorWidgetsConfiguration, this.options.editors);
+        }
+
+        this.vie = this.options.vie;
+        this.domService = this.vie.service(this.options.domService);
+        if (!this.options.model) {
+          var widget = this;
+          this.vie.load({
+            element: this.element
+          }).from(this.options.domService).execute().done(function (entities) {
+            widget.options.model = entities[0];
+          });
+        }
+        if (_.isFunction(this.options.decorateEditableEntity)) {
+          this.options.decorateEditableEntity(this._params());
+        }
+      },
+      // Method used for cycling between the different states of the Editable widget:
+      //
+      // * Inactive: editable is loaded but disabled
+      // * Candidate: editable is enabled but not activated
+      // * Highlight: user is hovering over the editable (not set by Editable widget directly)
+      // * Activating: an editor widget is being activated for user to edit with it (skipped for editors that activate instantly)
+      // * Active: user is actually editing something inside the editable
+      // * Changed: user has made changes to the editable
+      // * Invalid: the contents of the editable have validation errors
+      //
+      // In situations where state changes are triggered for a particular property editor, the `predicate`
+      // argument will provide the name of that property.
+      //
+      // State changes may carry optional context information in a JavaScript object. The payload of these context objects is not
+      // standardized, and is meant to be set and used by the application controller
+      //
+      // The callback parameter is optional and will be invoked after a state change has been accepted (after the 'statechange'
+      // event) or rejected.
+      setState: function (state, predicate, context, callback) {
+        var previous = this.options.state;
+        var current = state;
+        if (current === previous) {
+          return;
+        }
+
+        if (this.options.acceptStateChange === undefined || !_.isFunction(this.options.acceptStateChange)) {
+          // Skip state transition validation
+          this._doSetState(previous, current, predicate, context);
+          if (_.isFunction(callback)) {
+            callback(true);
+          }
+          return;
+        }
+
+        var widget = this;
+        this.options.acceptStateChange(previous, current, predicate, context, function (accepted) {
+          if (accepted) {
+            widget._doSetState(previous, current, predicate, context);
+          }
+          if (_.isFunction(callback)) {
+            callback(accepted);
+          }
+          return;
+        });
+      },
+
+      getState: function () {
+        return this.options.state;
+      },
+
+      _doSetState: function (previous, current, predicate, context) {
+        this.options.state = current;
+        if (current === 'inactive') {
+          this.disable();
+        } else if ((previous === null || previous === 'inactive') && current !== 'inactive') {
+          this.enable();
+        }
+
+        this._trigger('statechange', null, this._params(predicate, {
+          previous: previous,
+          current: current,
+          context: context
+        }));
+      },
+    };
+  };
+
   // Define Create's EditableEntity widget.
-  jQuery.widget('Midgard.midgardEditable', {
+  jQuery.widget('Midgard.midgardEditable', jQuery.extend(true, (new api()), {
     options: {
-      propertyEditors: {},
-      collections: [],
-      model: null,
       // the configuration (mapping and options) of property editor widgets
       propertyEditorWidgetsConfiguration: {
         hallo: {
@@ -29,20 +172,12 @@
         'default': 'midgardCollectionAdd'
       },
       toolbarState: 'full',
-      vie: null,
       domService: 'rdfa',
       predicateSelector: '[property]',
-      disabled: false,
       localize: function (id, language) {
         return window.midgardCreate.localize(id, language);
       },
       language: null,
-      // Current state of the Editable
-      state: null,
-      // Callback function for validating changes between states. Receives the previous state, new state, possibly property, and a callback
-      acceptStateChange: true,
-      // Callback function for listening (and reacting) to state changes.
-      stateChange: null,
       // Callback function for decorating the full editable. Will be called on instantiation
       decorateEditableEntity: null,
       // Callback function for decorating a single property editor widget. Will
@@ -79,129 +214,6 @@
       } : {};
 
       return _.extend(entityParams, propertyParams, extended);
-    },
-
-    _create: function () {
-      // Backwards compatibility:
-      // - this.options.propertyEditorWidgets used to be this.options.widgets
-      // - this.options.propertyEditorWidgetsConfiguration used to be
-      //   this.options.editors
-      if (this.options.widgets) {
-        this.options.propertyEditorWidgets = _.extend(this.options.propertyEditorWidgets, this.options.widgets);
-      }
-      if (this.options.editors) {
-        this.options.propertyEditorWidgetsConfiguration = _.extend(this.options.propertyEditorWidgetsConfiguration, this.options.editors);
-      }
-
-      this.vie = this.options.vie;
-      this.domService = this.vie.service(this.options.domService);
-      if (!this.options.model) {
-        var widget = this;
-        this.vie.load({
-          element: this.element
-        }).from(this.options.domService).execute().done(function (entities) {
-          widget.options.model = entities[0];
-        });
-      }
-      if (_.isFunction(this.options.decorateEditableEntity)) {
-        this.options.decorateEditableEntity(this._params());
-      }
-    },
-
-    _init: function () {
-      // Backwards compatibility:
-      // - this.options.propertyEditorWidgets used to be this.options.widgets
-      // - this.options.propertyEditorWidgetsConfiguration used to be
-      //   this.options.editors
-      if (this.options.widgets) {
-        this.options.propertyEditorWidgets = _.extend(this.options.propertyEditorWidgets, this.options.widgets);
-      }
-      if (this.options.editors) {
-        this.options.propertyEditorWidgetsConfiguration = _.extend(this.options.propertyEditorWidgetsConfiguration, this.options.editors);
-      }
-
-      // Old way of setting the widget inactive
-      if (this.options.disabled === true) {
-        this.setState('inactive');
-        return;
-      }
-
-      if (this.options.disabled === false && this.options.state === 'inactive') {
-        this.setState('candidate');
-        return;
-      }
-      this.options.disabled = false;
-
-      if (this.options.state) {
-        this.setState(this.options.state);
-        return;
-      }
-      this.setState('candidate');
-    },
-
-    // Method used for cycling between the different states of the Editable widget:
-    //
-    // * Inactive: editable is loaded but disabled
-    // * Candidate: editable is enabled but not activated
-    // * Highlight: user is hovering over the editable (not set by Editable widget directly)
-    // * Activating: an editor widget is being activated for user to edit with it (skipped for editors that activate instantly)
-    // * Active: user is actually editing something inside the editable
-    // * Changed: user has made changes to the editable
-    // * Invalid: the contents of the editable have validation errors
-    //
-    // In situations where state changes are triggered for a particular property editor, the `predicate`
-    // argument will provide the name of that property.
-    //
-    // State changes may carry optional context information in a JavaScript object. The payload of these context objects is not
-    // standardized, and is meant to be set and used by the application controller
-    //
-    // The callback parameter is optional and will be invoked after a state change has been accepted (after the 'statechange'
-    // event) or rejected.
-    setState: function (state, predicate, context, callback) {
-      var previous = this.options.state;
-      var current = state;
-      if (current === previous) {
-        return;
-      }
-
-      if (this.options.acceptStateChange === undefined || !_.isFunction(this.options.acceptStateChange)) {
-        // Skip state transition validation
-        this._doSetState(previous, current, predicate, context);
-        if (_.isFunction(callback)) {
-          callback(true);
-        }
-        return;
-      }
-
-      var widget = this;
-      this.options.acceptStateChange(previous, current, predicate, context, function (accepted) {
-        if (accepted) {
-          widget._doSetState(previous, current, predicate, context);
-        }
-        if (_.isFunction(callback)) {
-          callback(accepted);
-        }
-        return;
-      });
-    },
-
-    getState: function () {
-      return this.options.state;
-    },
-
-    _doSetState: function (previous, current, predicate, context) {
-      this.options.state = current;
-      if (current === 'inactive') {
-        this.disable();
-      } else if ((previous === null || previous === 'inactive') && current !== 'inactive') {
-        this.enable();
-      }
-
-      this._trigger('statechange', null, this._params(predicate, {
-        previous: previous,
-        current: current,
-        context: context
-      }));
     },
 
     findEditablePredicateElements: function (callback) {
@@ -464,5 +476,10 @@
         jQuery(data.element).removeClass('ui-state-disabled');
       }
     }
-  });
+  }));
+
+  // Expose the API as basic object.
+  window.Midgard = window.Midgard || {};
+  window.Midgard.midgardEditable = api;
+
 })(jQuery);

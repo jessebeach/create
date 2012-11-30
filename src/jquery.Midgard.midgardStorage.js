@@ -8,7 +8,35 @@
   /*global jQuery:false _:false window:false */
   'use strict';
 
-  jQuery.widget('Midgard.midgardStorage', {
+  // Define the storage API.
+  var api = function () {
+    return {
+      _create: function () {
+        var widget = this;
+        this.changedModels = [];
+
+        if (window.localStorage) {
+          this.options.localStorage = true;
+        }
+
+        this.vie = this.options.vie;
+
+        this.vie.entities.on('add', function (model) {
+          // Add the back-end URL used by Backbone.sync
+          model.url = widget.options.url;
+          model.toJSON = model.toJSONLD;
+        });
+
+        widget._bindEditables();
+        if (widget.options.autoSave) {
+          widget._autoSave();
+        }
+      }
+    };
+  };
+
+  // Expose the API as a jQuery widget.
+  jQuery.widget('Midgard.midgardStorage', jQuery.extend({
     saveEnabled: true,
     options: {
       // Whether to use localstorage
@@ -35,28 +63,6 @@
         return window.midgardCreate.localize(id, language);
       },
       language: null
-    },
-
-    _create: function () {
-      var widget = this;
-      this.changedModels = [];
-
-      if (window.localStorage) {
-        this.options.localStorage = true;
-      }
-
-      this.vie = this.options.vie;
-
-      this.vie.entities.on('add', function (model) {
-        // Add the back-end URL used by Backbone.sync
-        model.url = widget.options.url;
-        model.toJSON = model.toJSONLD;
-      });
-
-      widget._bindEditables();
-      if (widget.options.autoSave) {
-        widget._autoSave();
-      }
     },
 
     _autoSave: function () {
@@ -505,5 +511,10 @@
 
       window.localStorage.removeItem(model.getSubjectUri());
     }
-  });
+  }, (new api())));
+
+  // Expose the API as basic object.
+  window.Midgard = window.Midgard || {};
+  window.Midgard.midgardStorage = api;
+
 })(jQuery);
